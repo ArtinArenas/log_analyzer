@@ -5,13 +5,34 @@ import models
 
 # Detectar intentos de login por ip
 def attemptsForIp(eventos):
+    # Creo un dic {ip-ObjetoAlerta} -> leo registro por registro -> 
+    # si no esta inserto en el dic / si esta cantIntentos++ y agregar user al set de user_id
+    #recorro el diccionario y paso todos los values a una lista para retornar
+
+    #Todo esto es hashtable con ip_address
+
+
+    attempts = {}
+    for evento in eventos:
+        # Si existe sumo un intento, sino lo agrego a la lista
+        attempts.update({evento.ip_address: attempts.get(evento.ip_address, 0) + 1})
+
+
+    
+    '''
     # Diccionario que almacena la cantidad de intentos por ip
     attempts = {}
     for evento in eventos:
         # Si existe sumo un intento, sino lo agrego al diccionario
         attempts.update({evento.ip_address: attempts.get(evento.ip_address, 0) + 1})
     
-    return attempts
+    #creo el objeto a retornar
+    alerts = []
+    #agrego en alerts objetos tipo Alert desde el diccionario
+    for key, value in attemps.items():
+        #timestamp, hour, severity, detector, messaje, user_id, ip_address
+        alerts.append(Alert('','','attempsForIp', 'Cant Intentos: ' + value, '', key))
+    '''
 
 # Detectar intentos fallidos por ip
 def failedAttemptsForIp(eventos):

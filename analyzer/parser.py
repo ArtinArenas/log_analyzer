@@ -1,4 +1,4 @@
-from models import Evento
+from models import Event
 import re 
 from dataclasses import dataclass
 
@@ -21,7 +21,7 @@ def parse_log():
             m = re.search(patron, linea)
             if m:
                 # Agrego un registro de tipo Evento con los datos extraídos
-                registros.append(Evento(m.group("timestamp"), m.group("hour"), m.group("action"), m.group("user_id"), m.group("ip_address")))
+                registros.append(Event(m.group("timestamp"), m.group("hour"), m.group("action"), m.group("user_id"), m.group("ip_address")))
     
     
     return registros
