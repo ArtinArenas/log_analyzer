@@ -1,86 +1,158 @@
 
-# Logica para la deteccion de eventos
+# Lógica para la detección de eventos
 
-import models
+from collections import defaultdict
 
-# Detectar intentos de login por ip
-def attemptsForIp(eventos):
-    # Creo un dic {ip-ObjetoAlerta} -> leo registro por registro -> 
-    # si no esta inserto en el dic / si esta cantIntentos++ y agregar user al set de user_id
-    #recorro el diccionario y paso todos los values a una lista para retornar
-
-    #Todo esto es hashtable con ip_address
+from models import Alert
 
 
+def _severity_from_attempts(attempts):
+    if attempts >= 5:
+        return "high"
+    if attempts >= 3:
+        return "medium"
+    return "low"
+
+
+def event_to_alert(event, detector="attempts_for_ip"):
+    if isinstance(event, dict):
+        ip_address = event.get("ip_address")
+        user_ids = sorted(event.get("user_ids", []))
+        attempts = event.get("attempts", 0)
+        timestamp = event.get("timestamp")
+        hour = event.get("hour")
+    else:
+        ip_address = getattr(event, "ip_address", None)
+        user_ids = getattr(event, "user_id", [])
+        attempts = getattr(event, "attempts", 0)
+        timestamp = getattr(event, "timestamp", None)
+        hour = getattr(event, "hour", None)
+
+    severity = _severity_from_attempts(attempts)
+    message = (
+        f"{attempts} intentos detectados para la IP {ip_address} "
+        f"desde los usuarios: {', '.join(user_ids) if user_ids else 'sin usuarios'}"
+    )
+
+    return Alert(
+        timestamp,
+        hour,
+        severity,
+        detector,
+        message,
+        user_ids,
+        ip_address,
+        attempts,
+    )
+
+
+# Detectar intentos de login por IP
+def attempts_for_ip(events):
     attempts = {}
-    for evento in eventos:
-        # Si existe sumo un intento, sino lo agrego a la lista
-        attempts.update({evento.ip_address: attempts.get(evento.ip_address, 0) + 1})
 
+    for event in events:
+        entry = attempts.setdefault(
+            event.ip_address,
+            {
+                "ip_address": event.ip_address,
+                "timestamp": None,
+                "hour": None,
+                "attempts": 0,
+                "user_ids": set(),
+            },
+        )
 
-    
-    '''
-    # Diccionario que almacena la cantidad de intentos por ip
-    attempts = {}
-    for evento in eventos:
-        # Si existe sumo un intento, sino lo agrego al diccionario
-        attempts.update({evento.ip_address: attempts.get(evento.ip_address, 0) + 1})
-    
-    #creo el objeto a retornar
+        entry["attempts"] += 1
+        entry["user_ids"].add(event.user_id[0] if isinstance(event.user_id, list) else event.user_id)
+
+        if entry["timestamp"] is None:
+            entry["timestamp"] = event.timestamp
+        if entry["hour"] is None:
+            entry["hour"] = event.hour
+
     alerts = []
-    #agrego en alerts objetos tipo Alert desde el diccionario
-    for key, value in attemps.items():
-        #timestamp, hour, severity, detector, messaje, user_id, ip_address
-        alerts.append(Alert('','','attempsForIp', 'Cant Intentos: ' + value, '', key))
-    '''
+    for record in attempts.values():
+        if record["attempts"] <= 1:
+            continue
 
-# Detectar intentos fallidos por ip
-def failedAttemptsForIp(eventos):
-    # Diccionario que almacena la cantidad de intentos fallidos por ip
-    failed = {}
-    for evento in eventos:
-        if evento.action == "LOGIN_FAILED":
-            failed.update({evento.ip_address: failed.get(evento.ip_address, 0) + 1})
-    
-    return failed
+        record["timestamp"] = None
+        record["hour"] = None
+        record["user_ids"] = sorted(record["user_ids"])
+        alerts.append(event_to_alert(record, detector="attempts_for_ip"))
 
-# Detectar fuerza bruta por ip
-def bruteForceForIp(eventos, threshold=5):
-    # Diccionario que almacena la cantidad de intentos fallidos por ip
-    failed = {}
-    for evento in eventos:
-        if evento.action == "LOGIN_FAILED":
-            failed.update({evento.ip_address: failed.get(evento.ip_address, 0) + 1})
-    
-    # Filtrar las ip que superan el umbral
+    return alerts
+
+
+# Detectar intentos fallidos por IP
+def failed_attempts_for_ip(events):
+    failed = defaultdict(int)
+    for event in events:
+        if event.action == "LOGIN_FAILED":
+            failed[event.ip_address] += 1
+
+    return dict(failed)
+
+
+# Detectar fuerza bruta por IP
+def brute_force_for_ip(events, threshold=5):
+    failed = failed_attempts_for_ip(events)
     brute_force = {ip: count for ip, count in failed.items() if count >= threshold}
-    
+
     return brute_force
 
+
 # Detectar horarios de actividad sospechosa
-def suspiciousActivityByHour(eventos, hourInferior, hourSuperior):
-    # Diccionario que almacena la cantidad de intentos fallidos por hora
-    failed = {}
-    for evento in eventos:
-        failed.update({evento.hour: failed.get(evento.hour, 0) + 1})
-    
-    # Filtrar las horas que esten en el umbral
-    suspicious_hours = {hour: count for hour, count in failed.items() if hour >= hourInferior and hour <= hourSuperior}
-    
+def suspicious_activity_by_hour(events, hour_inferior, hour_superior):
+    counts = defaultdict(int)
+    for event in events:
+        counts[event.hour] += 1
+
+    suspicious_hours = {
+        hour: count for hour, count in counts.items() if hour_inferior <= hour <= hour_superior
+    }
+
     return suspicious_hours
 
-# Detectar ips publicas
-'''
-def publicIps(eventos):
-    # Diccionario que almacena la cantidad de intentos fallidos por ip
-    failed = {}
-    for evento in eventos:
-        if evento.action == "LOGIN_FAILED":
-            failed.update({evento.ip_address: failed.get(evento.ip_address, 0) + 1})
-    
-    # Filtrar las ip que sean publicas
-    #public_ips = {ip: count for ip, count in failed.items() if not isPrivateIp(ip)}
-    public_ips = {ip: count for ip, count in failed.items() if not is_Private(ip)}
-    
-    return public_ips
-'''
+
+# Detectar IPs públicas
+def _is_private_ip(ip_address):
+    try:
+        octets = [int(part) for part in ip_address.split(".")]
+    except ValueError:
+        return False
+
+    if len(octets) != 4 or any(part < 0 or part > 255 for part in octets):
+        return False
+
+    if octets[0] == 10:
+        return True
+    if octets[0] == 172 and 16 <= octets[1] <= 31:
+        return True
+    if octets[0] == 192 and octets[1] == 168:
+        return True
+    if ip_address in {"127.0.0.1", "0.0.0.0"}:
+        return True
+
+    return False
+
+
+def public_ips(events):
+    failed = defaultdict(int)
+    for event in events:
+        if event.action == "LOGIN_FAILED":
+            failed[event.ip_address] += 1
+
+    public_ips_result = {
+        ip: count for ip, count in failed.items() if not _is_private_ip(ip)
+    }
+
+    return public_ips_result
+
+
+# Alias para compatibilidad
+EventToAlert = event_to_alert
+attemptsForIp = attempts_for_ip
+failedAttemptsForIp = failed_attempts_for_ip
+bruteForceForIp = brute_force_for_ip
+suspiciousActivityByHour = suspicious_activity_by_hour
+publicIps = public_ips
