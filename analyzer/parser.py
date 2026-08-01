@@ -1,27 +1,32 @@
+import re
+
 from models import Event
-import re 
-from dataclasses import dataclass
 
 
 def parse_log():
+    records = []
 
-    registros = []
-
-    patron = re.compile(
-        r'(?P<timestamp>\d{4}-\d{2}-\d{2})\s+'
-        r'(?P<hour>\d{6})\s+'
-        r'(?P<action>\w+)\s+'
-        r'user=(?P<user_id>\w+)\s+'
-        r'ip=(?P<ip_address>\d+\.\d+\.\d+\.\d+)'
+    pattern = re.compile(
+        r"(?P<timestamp>\d{4}-\d{2}-\d{2})\s+"
+        r"(?P<hour>\d{6})\s+"
+        r"(?P<action>\w+)\s+"
+        r"user=(?P<user_id>\w+)\s+"
+        r"ip=(?P<ip_address>\d+\.\d+\.\d+\.\d+)"
     )
 
-    #Lectura del log linea a linea
-    with open("activity.log", "r") as archivo:
-        for linea in archivo:
-            m = re.search(patron, linea)
-            if m:
-                # Agrego un registro de tipo Evento con los datos extraídos
-                registros.append(Event(m.group("timestamp"), m.group("hour"), m.group("action"), m.group("user_id"), m.group("ip_address")))
-    
-    
-    return registros
+    with open("activity.log", "r", encoding="utf-8") as file:
+        for line in file:
+            match = re.search(pattern, line)
+            if match:
+                records.append(
+                    Event(
+                        match.group("timestamp"),
+                        match.group("hour"),
+                        match.group("action"),
+                        match.group("user_id"),
+                        match.group("ip_address"),
+                        0,
+                    )
+                )
+
+    return records
