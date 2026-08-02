@@ -37,25 +37,29 @@ class DetectorTests(unittest.TestCase):
 
     def test_failed_attempts_for_ip_counts_only_failed_events(self):
         result = failed_attempts_for_ip(self.events)
-        self.assertEqual(result["192.168.1.15"], 3)
-        self.assertEqual(result["192.168.1.16"], 1)
+        by_ip = {item.ip_address: item for item in result}
+        self.assertEqual(by_ip["192.168.1.15"].attempts, 3)
+        self.assertEqual(by_ip["192.168.1.16"].attempts, 1)
 
     def test_brute_force_for_ip_uses_threshold(self):
         result = brute_force_for_ip(self.events, threshold=3)
-        self.assertEqual(result["192.168.1.15"], 3)
-        self.assertNotIn("192.168.1.16", result)
+        by_ip = {item.ip_address: item for item in result}
+        self.assertEqual(by_ip["192.168.1.15"].attempts, 3)
+        self.assertNotIn("192.168.1.16", by_ip)
 
     def test_suspicious_activity_by_hour_filters_range(self):
         result = suspicious_activity_by_hour(self.events, "081532", "081535")
-        self.assertEqual(result["081532"], 1)
-        self.assertEqual(result["081535"], 1)
-        self.assertNotIn("081536", result)
+        by_hour = {item.hour: item for item in result}
+        self.assertEqual(by_hour["081532"].attempts, 1)
+        self.assertEqual(by_hour["081535"].attempts, 1)
+        self.assertNotIn("081536", by_hour)
 
     def test_public_ips_filters_out_private_addresses(self):
         result = public_ips(self.events)
-        self.assertEqual(result["8.8.8.8"], 1)
-        self.assertNotIn("192.168.1.15", result)
-        self.assertNotIn("192.168.1.16", result)
+        by_ip = {item.ip_address: item for item in result}
+        self.assertEqual(by_ip["8.8.8.8"].attempts, 1)
+        self.assertNotIn("192.168.1.15", by_ip)
+        self.assertNotIn("192.168.1.16", by_ip)
 
 
 if __name__ == "__main__":
