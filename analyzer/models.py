@@ -33,6 +33,75 @@ class Event:
             setattr(self, field_name, value)
 
 
+class Detail:
+    def __init__(self, timestamp, user, action, result):
+        self.timestamp = timestamp
+        self.user = user
+        self.action = action
+        self.result = result
+
+class DetalleIntentos:
+    def __init__(self, ip_address, attempts_failed, failed_user_ids, attempts_success, successful_user_ids):
+        self.ip_address = ip_address
+        self.attempts = attempts_failed + attempts_success
+        self.attempts_failed = attempts_failed
+        self.failed_user_ids = [failed_user_ids] if not isinstance(failed_user_ids, list) else failed_user_ids
+        self.attempts_success = attempts_success
+        self.successful_user_ids = [successful_user_ids] if not isinstance(successful_user_ids, list) else successful_user_ids
+
+class DetalleIntentosHora(DetalleIntentos):
+    def __init__(self, ip_address, attempts_failed, failed_user_ids, attempts_success, successful_user_ids, hour_inferior, hour_superior):
+        super().__init__(ip_address, attempts_failed, failed_user_ids, attempts_success, successful_user_ids)
+        self.hour_inferior = hour_inferior
+        self.hour_superior = hour_superior
+
+class DetalleBruteForce:
+    def __init__(self, user, failedAttempts, compromise):
+        self.user = user
+        self.failedAttempts = failedAttempts
+        self.compromise = compromise
+
+class BruteForceResult:
+    def _init_(self, ip_address, rapid, persistent, compromise, spraying):
+        self.ip_address = ip_address
+        self.rapid = rapid
+        self.persistent = persistent
+        self.compromise = [compromise] #Lista DetalleBruteForce
+        self.spraying = spraying
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # Objeto que retornan los detectores
 class Alert:
     def __init__(

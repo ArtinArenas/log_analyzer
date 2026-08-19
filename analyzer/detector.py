@@ -1,251 +1,224 @@
 
 # Lógica para la detección de eventos
-
 from collections import defaultdict
-
 from models import build_alert, classify_event
+from datetime import datetime
 
-
-# Calcula la severidad de una alerta según la cantidad de intentos observados.
-def _severity_from_attempts(attempts):
-    if attempts >= 5:
-        return "high"
-    if attempts >= 3:
-        return "medium"
-    return "low"
-
-
-# Construye una alerta usando un helper común para todos los detectores.
-def _build_alert_from_record(record, detector, message, severity, attempts, **overrides):
-    if isinstance(record, dict):
-        source = dict(record)
-    else:
-        source = vars(record).copy()
-
-    payload = {
-        "timestamp": overrides.get("timestamp", source.get("timestamp")),
-        "hour": overrides.get("hour", source.get("hour")),
-        "severity": severity,
-        "detector": detector,
-        "message": message,
-        "user_id": overrides.get("user_id", source.get("user_ids", source.get("user_id", []))),
-        "ip_address": overrides.get("ip_address", source.get("ip_address")),
-        "attempts": attempts if attempts is not None else source.get("attempts", 0),
-    }
-
-    for key, value in source.items():
-        if key not in payload:
-            payload[key] = value
-
-    payload.update({key: value for key, value in overrides.items() if key not in payload})
-    return build_alert(**payload)
-
-
-# Genera alertas de conteo para los detectores que agregan por una clave.
-def _build_count_alerts(records, detector, key_name, value_name, extra_fields=None):
-    alerts = []
-    for key, value in records.items():
-        payload = {
-            "timestamp": None,
-            "hour": None,
-            "user_id": [],
-            "ip_address": key if key_name == "ip_address" else None,
-            "attempts": value,
-        }
-        if extra_fields:
-            payload.update(extra_fields(key, value))
-
-        message = f"{value} eventos detectados para {key_name} {key}"
-        alerts.append(
-            _build_alert_from_record(
-                payload,
-                detector,
-                message=message,
-                severity=_severity_from_attempts(value),
-                attempts=value,
-                timestamp=None,
-                hour=None,
-                user_id=payload.get("user_id", []),
-                ip_address=payload.get("ip_address"),
-            )
-        )
-    return alerts
-
-
-# Convierte un evento o un diccionario en una alerta con formato homogéneo.
-def event_to_alert(event, detector="attempts_for_ip"):
-    if isinstance(event, dict):
-        ip_address = event.get("ip_address")
-        user_ids = event.get("user_ids", [])
-        attempts = event.get("attempts", 0)
-        timestamp = event.get("timestamp")
-        hour = event.get("hour")
-    else:
-        ip_address = getattr(event, "ip_address", None)
-        user_ids = getattr(event, "user_id", [])
-        attempts = getattr(event, "attempts", 0)
-        timestamp = getattr(event, "timestamp", None)
-        hour = getattr(event, "hour", None)
-
-    if isinstance(user_ids, list):
-        normalized_user_ids = sorted(user_ids)
-    elif user_ids:
-        normalized_user_ids = [user_ids]
-    else:
-        normalized_user_ids = []
-
-    severity = _severity_from_attempts(attempts)
-    message = (
-        f"{attempts} intentos detectados para la IP {ip_address} "
-        f"desde los usuarios: {', '.join(normalized_user_ids) if normalized_user_ids else 'sin usuarios'}"
-    )
-
-    return _build_alert_from_record(
-        event,
-        detector,
-        message=message,
-        severity=severity,
-        attempts=attempts,
-        timestamp=timestamp,
-        hour=hour,
-        user_id=normalized_user_ids,
-        ip_address=ip_address,
-    )
-
-
-# Detecta intentos repetidos de login agrupados por IP.
+# Detecta intentos de login agrupados por IP. 
+# Devuelve un lista con ip, cant de accesos/usuario fallidos y exitosos.
+# Input: hashmap con ip como clave y lista de eventos como valor.
+# Output: lista de objetos DetalleIntentos
 def attempts_for_ip(events):
-    attempts = {}
+    ip = []
+    detalle = DetalleIntentos()
+    
+    for key, value in events.items():
+        detalle.ip_address = key  
+        # Agrega la IP a la lista de intentos
+        if value["result"] == "failed":
+            detalle.attempts_failed += len(value)
+            detalle.failed_user_ids.append(value.user)
 
-    for event in events:
-        entry = attempts.setdefault(
-            event.ip_address,
-            {
-                "ip_address": event.ip_address,
-                "timestamp": None,
-                "hour": None,
-                "attempts": 0,
-                "user_ids": set(),
-            },
-        )
-
-        entry["attempts"] += 1
-        entry["user_ids"].add(event.user_id[0] if isinstance(event.user_id, list) else event.user_id)
-
-        if entry["timestamp"] is None:
-            entry["timestamp"] = event.timestamp
-        if entry["hour"] is None:
-            entry["hour"] = event.hour
-
-    alerts = []
-    for record in attempts.values():
-        if record["attempts"] <= 1:
-            continue
-
-        record["timestamp"] = None
-        record["hour"] = None
-        record["user_ids"] = sorted(record["user_ids"])
-        alerts.append(event_to_alert(record, detector="attempts_for_ip"))
-
-    return alerts
-
-
-# Detecta intentos fallidos agrupados por dirección IP.
-def failed_attempts_for_ip(events):
-    failed = defaultdict(int)
-    for event in events:
-        if classify_event(event) == "failure":
-            failed[event.ip_address] += 1
-
-    return _build_count_alerts(failed, "failed_attempts_for_ip", "ip_address", "attempts")
-
-
-# Detecta fuerza bruta cuando los fallos superan un umbral.
-def brute_force_for_ip(events, threshold=5):
-    failed = failed_attempts_for_ip(events)
-    brute_force = [
-        item for item in failed
-        if item.attempts >= threshold
-    ]
-
-    return brute_force
-
+        if value["result"] == "success":
+            detalle.attempts_success += len(value)
+            detalle.successful_user_ids.append(value.user)
+    
+    return ip
 
 # Detecta horas con una concentración sospechosa de eventos.
+# Input: hashmap con ip como clave y lista de eventos como valor.
+# Output: lista de objetos DetalleIntentosHora 
 def suspicious_activity_by_hour(events, hour_inferior, hour_superior):
-    counts = defaultdict(int)
-    for event in events:
-        counts[event.hour] += 1
+    suspicious_activity = []
+    
+    if(
+        if hour_inferior is None:
+            hour_inferior = time(0,0,0)
+        if hour_superior is None:
+            hour_superior = time(5,0,0)
+    )
 
-    suspicious_hours = {
-        hour: count
-        for hour, count in counts.items()
-        if int(hour_inferior) <= int(hour) <= int(hour_superior)
-    }
+    detalle = DetalleIntentosHora
 
-    return [
-        _build_alert_from_record(
-            {
-                "timestamp": None,
-                "hour": hour,
-                "user_id": [],
-                "ip_address": None,
-                "attempts": count,
-                "count": count,
-            },
-            "suspicious_activity_by_hour",
-            message=f"{count} eventos detectados para la hora {hour}",
-            severity="low",
-            attempts=count,
-            timestamp=None,
-            hour=hour,
-            user_id=[],
-            ip_address=None,
-        )
-        for hour, count in suspicious_hours.items()
+    for key, value in events.items():
+        detalle.ip_address = key
+
+        for event in value:
+            #Paso la fecha a hora para hacer las comparaciones
+            horaRegistro = event.timestamp.time()
+
+            if (hour_inferior <= horaRegistro <= hour_superior):
+                if event.result == "failed":
+                    detalle.attempts_failed += 1
+                    detalle.failed_user_ids.append(event.user)
+                elif event.result == "success":
+                    detalle.attempts_success += 1
+                    detalle.successful_user_ids.append(event.user)
+            
+            #Guardo la hora inferior y superior de los registros para cada ip
+            if(detalle.hour_inferior is None or horaRegistro < detalle.hour_inferior):
+                detalle.hour_inferior = horaRegistro
+            if(detalle.hour_superior is None or horaRegistro > detalle.hour_superior):
+                detalle.hour_superior = horaRegistro
+        
+        suspicious_activity.append(detalle)
+    
+    return suspicious_activity
+
+
+
+
+
+
+
+##############################################################################################################################
+#                                           Funciones para deteccion de fuerza bruta
+##############################################################################################################################
+
+# Detecta intentos de fuerza bruta.
+# Input: hashmap con ip como clave y lista de eventos como valor.
+# Output: lista de objetos ...
+
+
+# Orquestador de detectores de fuerza bruta
+def detect_brute_force_by_ip(events):
+    
+    brute_force_results = []
+
+    for ip, attempts in events.items():
+
+        brute_force = BruteForceResult()
+        brute_force.ip_address = ip
+
+        brute_force.rapid= detect_rapid_brute_force(attempts)
+        brute_force.persistent = detect_persistent_brute_force(attempts)
+        brute_force.compromise = detect_possible_compromise(attempts)
+        brute_force.spraying = detect_spraying_brute_force(attempts)
+
+
+        brute_force_results.append(brute_force)
+
+    return brute_force_results
+
+
+# Analiza la cantidad de intentos fallidos en una ventana de tiempo para detectar un ataque rapido
+def detect_rapid_brute_force(attempts):
+
+    threshold = 10  # Umbral de intentos fallidos para considerar fuerza bruta
+    minute_window = 1  # Ventana de tiempo en minutos para considerar los intentos fallidos
+
+    #Me armo una lista de intentos fallidos
+    failed_attempts = [
+        attempt
+        for attempt in attempts
+        if attempt.result == "failed"
     ]
 
+    for i in range(len(failed_attempts) - threshold + 1): # resto para evitar index error
 
-# Identifica si una dirección IP pertenece a una red privada.
-def _is_private_ip(ip_address):
-    try:
-        octets = [int(part) for part in ip_address.split(".")]
-    except ValueError:
-        return False
-
-    if len(octets) != 4 or any(part < 0 or part > 255 for part in octets):
-        return False
-
-    if octets[0] == 10:
-        return True
-    if octets[0] == 172 and 16 <= octets[1] <= 31:
-        return True
-    if octets[0] == 192 and octets[1] == 168:
-        return True
-    if ip_address in {"127.0.0.1", "0.0.0.0"}:
-        return True
-
+        # Si la diferencia entre el registro que estoy viendo y el registro que esta a threshold posiciones 
+        # adelante es menor a minute_window -> posible brute force
+        if failed_attempts[i + threshold - 1].timestamp - failed_attempts[i].timestamp <= timedelta(minutes=minute_window): 
+            return True
+    
     return False
 
+# Analiza muchos intentos fallidos consecutivos, detecta ataques persistentes donde se intenta una contraseña cada pocos segundos
+def detect_persistent_brute_force(attempts):
+    threshold = 30
+    fallidos_consecutivos = 0
 
-# Filtra las IPs públicas a partir de los fallos detectados.
-def public_ips(events):
-    failed = defaultdict(int)
-    for event in events:
-        if classify_event(event) == "failure":
-            failed[event.ip_address] += 1
+    for attempt in attempts:
+        if attempt.result == "failed":
+            fallidos_consecutivos += 1
+        elif attempt.result == "success":
+            fallidos_consecutivos = 0
+        
+        if(fallidos_consecutivos >= threshold): #Intento detectado
+            return True
+    
+    return False
 
-    public_ips_result = {
-        ip: count for ip, count in failed.items() if not _is_private_ip(ip)
-    }
+# Analiza cuando un usuario puede estar posiblemente comprometido
+def detect_possible_compromise(attempts):
+    # Si supera la cantidad de threadhold y despues hay un exitoso, posible ataque exitoso
+    threshold = 10
 
-    return _build_count_alerts(public_ips_result, "public_ips", "ip_address", "attempts")
+    usersDict = {}
+
+    for attempt in attempts:
+        #Obtengo el usuario o seteo valores dafaults
+        user = usersDict.get(attempt.user)
+        if(user is None):
+            user = DetalleBruteForce() # Instancio el objeto
+            user.user = attempt.user
+            user.failedAttempts = 0
+            user.compromise = 0
+
+        if(user.compromise == 0): #Si ya se que esta comprometido no lo sigo analizando
+            if attempt.result == "failed":
+                #inserto o actualizo el contador del usuario
+                user.failedAttempts += 1
+
+            elif attempt.result == "success":
+                if user.failedAttempts < threshold:
+                    user.failedAttempts = 0 #Si no supero el thredhold reinicio el contador
+                else:
+                    user.compromise = 1 #Usuario comprometido
+            
+            #Actualizo/agrego el objeto al dic
+        
+        usersDict[attempt.user] = user
+        
+    
+    #Retorno el diccionario Usuario:CantidadDeIntentos cuando la cantidadIntentos es mayor a threshold -> retorna usuarios comprometidos y sin comprometer
+    return {k: v for k, v in usersDict.items() if v.failedAttempts >= threshold}
 
 
-# Alias para compatibilidad
-EventToAlert = event_to_alert
-attemptsForIp = attempts_for_ip
-failedAttemptsForIp = failed_attempts_for_ip
-bruteForceForIp = brute_force_for_ip
-suspiciousActivityByHour = suspicious_activity_by_hour
-publicIps = public_ips
+# Muchos intentos de una misma ip con distintos usuarios. (PASSWORD SPRAYING)
+def detect_spraying_brute_force(attempts):
+    # Esta funcion creo que puede ser evitable, si en las funciones anteriores almaceno la cantidad de usuarios que 
+    # levanto desde attempt.user_id y tengo mas de 3 ip (por evitar falsos positivos por un user mal tipeado o un admin que usa su cuenta y la de root, etc) 
+    # -> posible spraying
+
+    #Por ahora cuento la cantidad de usuarios aca para no ensuciar otras funciones
+    if len(set(attempts.user)) >= 3 # Deberian solo intentos fallidos? 
+        return True 
+    return False
+
+# Muchos intentos fallidos contra un mismo usuario desde distintas IPs. (Ataque distribuido)
+'''def detect_distributed_brute_force(): ''' #Pensar como implementar
+    # Este caso es distinto, no me sirve pasarle attempts, deberia pasarle un diccionario por usuario que tenga las 
+    # IP desde las que intentaron conectarse (o crear el diccionario aca en base al otro).
+    # Las direcciones IP tanto publicas como privadas cambian casi todos los dias. Si analizo un log de un año me va a dar
+    # falsos positivos.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##############################################################################################################################
+#                                           Funciones para deteccion de anomalias
+##############################################################################################################################
+
+#Orquestador de anomalias
+def detect_anamalias():
+
+# Anomalias en conexiones exitosas de un mismo usuario desde distintas ip's en poco tiempo.
+def multi_connections():
+
+# Anomalias en conexiones exitosas de un mismo usuario desde distintas ubicaciones geográficas en un periodo de tiempo muy corto.
+def geo_connections():
+
+# conexiones fuera de horario (login 3am cuando normalmente ese usuario trabaja de: 08:00 - 18:00) ## No me parece muy grave -> Para desarrollar en un futuro
+def out_horary_connections():
+

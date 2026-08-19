@@ -1,8 +1,11 @@
 import re
 from datetime import datetime
 
-from models import Event, build_event, normalize_action, normalize_outcome
+from models import Event, Detail, build_event, normalize_action, normalize_outcome
 
+# Funciones para parsear los logs
+# Inpput: path al archivo de log
+# Output: hasmap donde la clave es la ip y el valor es una lista de objetos tipo Detail
 
 MONTHS = {
     "jan": 1,
@@ -21,6 +24,7 @@ MONTHS = {
 }
 
 
+# Funcion para leer la primera linea del archivo de log (para determinar que parser usar)
 def _read_log_content(path):
     try:
         with open(path, "r", encoding="utf-8") as file:
@@ -28,7 +32,7 @@ def _read_log_content(path):
     except FileNotFoundError:
         return ""
 
-
+# Funcion que contiene logica para decidir a que parser enviar el archivo de log
 def parse_log(path="log_ssh.log"):
     content = _read_log_content(path)
 
@@ -41,12 +45,17 @@ def parse_log(path="log_ssh.log"):
 #2026-07-20 081532 LOGIN_SUCCESS user=juan ip=192.168.1.15
 #2026-07-20 081535 LOGIN_FAILED user=admin ip=192.168.1.15
 def example_parser(path="activity.log"):
-    records = []
-
+    
+    hashmap = {} 
     pattern = re.compile(
-        r"(?P<timestamp>\d{4}-\d{2}-\d{2})\s+"
-        r"(?P<hour>\d{6})\s+"
-        r"(?P<action>\w+)\s+"
+        r"(?P<year>\d{4})-"
+        r"(?P<month>\d{2})-"
+        r"(?P<day>\d{2})\s+"
+        r"(?P<hour>\d{2})"
+        r"(?P<minute>\d{2})"
+        r"(?P<second>\d{2})\s+"
+        r"(?P<action>\w+)_\s+"
+        r"(?P<result>\w+)\s+"
         r"user=(?P<user_id>\w+)\s+"
         r"ip=(?P<ip_address>\d+\.\d+\.\d+\.\d+)"
     )
@@ -56,22 +65,33 @@ def example_parser(path="activity.log"):
             for line in file:
                 match = re.search(pattern, line)
                 if match:
-                    payload = {
-                        "timestamp": match.group("timestamp"),
-                        "hour": match.group("hour"),
-                        "action": match.group("action"),
-                        "user_id": match.group("user_id"),
-                        "ip_address": match.group("ip_address"),
-                        "attempts": 0,
-                        "source": "example",
-                        "raw": line.strip(),
-                        "outcome": normalize_outcome(action=match.group("action")),
-                    }
-                    records.append(build_event(**payload))
+                    
+                    #Formateo de la fecha y hora
+                    date_objet = datetime(
+                        year=int(match.group('year')),
+                        month=int(match.group('month')),
+                        day=int(match.group('day')),
+                        hour=int(match.group('hour')),
+                        minute=int(match.group('minute')),
+                        second=int(match.group('second'))
+                    )
+                    date_format = date_objet.isoformat()
+
+                    #Guardo los resultados en un objeto tipo Detail
+                    detail = Detail(
+                        date_format,            # Fecha y hora
+                        match.group("user_id"), # Usuario
+                        match.group("action"),  # Accion
+                        match.group("result")   # Resultado de la accion
+                    )
+
+                    #Inserto los datos en el hashmap, donde la clave es la ip y el valor es una lista de objetos tipo Detail
+                    hashmap.setdefault(match.group("ip_address"), []).append(detail)
+                
     except FileNotFoundError:
         return []
 
-    return records
+    return hashmap
 
 
 #dic 10 22:17:27 debian sshd[16518]: Accepted password for paco from 192.168.1.47 port 49746 ssh2
@@ -79,19 +99,21 @@ def example_parser(path="activity.log"):
 #ago 01 14:18:27 debian sshd[2915]: Accepted publickey for juan from 192.168.1.37 port 38816 ssh2: ED25519 SHA256:w0z/sKhv9BpomD9XjxOL0kSokngs+qpAhpjYHpaX+KA
 
 def openSsh_parser(path="log_ssh.log"):
-    records = []
+    hashmap = {}
 
     pattern = re.compile(
         r"(?P<month>\w{3})\s+"
         r"(?P<day>\d{1,2})\s+"
-        r"(?P<time>\d{2}:\d{2}:\d{2})\s+"
+        r"(?P<hour>\d{2}):+"
+        r"(?P<minute>\d{2}):+"
+        r"(?P<second>\d{2})\s+"
         r"(?P<host>\S+)\s+"
         r"sshd\[(?P<pid>\d+)\]:\s+"
         r"(?P<result>Accepted|Failed)\s+"
         r"(?P<method>password|publickey)\s+for\s+"
         r"(?:(?:invalid user)\s+)?"
-        r"(?P<user>\S+)\s+"
-        r"from\s+(?P<ip>\d+\.\d+\.\d+\.\d+)\s+"
+        r"(?P<user_id>\S+)\s+"
+        r"from\s+(?P<ip_address>\d+\.\d+\.\d+\.\d+)\s+"
         r"port\s+(?P<port>\d+)"
     )
 
@@ -99,38 +121,34 @@ def openSsh_parser(path="log_ssh.log"):
         with open(path, "r", encoding="utf-8") as file:
             for line in file:
                 match = re.search(pattern, line)
-                if not match:
-                    continue
+                if match:
+                
+                #Formateo de la fecha y hora
+                date_objet = datetime(
+                    #Mas adelante ver de leer el archivo alreves soponiendo que el ultimo registro es del año actual y 
+                    #calcular otros años cuando pasa de enero 1 a diciembre 31
+                    year= datetime.now().year,  #Por ahora le hardcodeo el año actual
+                    month= MONTHS.get(match.group('month')),
+                    day=int(match.group('day')),
+                    hour=int(match.group('hour')),
+                    minute=int(match.group('minute')),
+                    second=int(match.group('second'))
+                )
+                date_format = date_objet.isoformat()
 
-                month = MONTHS.get(match.group("month").lower())
-                if month is None:
-                    month = 1
-                day = int(match.group("day"))
-                time_text = match.group("time")
-                hour = time_text.replace(":", "")
-                timestamp = f"{datetime.now().year:04d}-{month:02d}-{day:02d}"
-                result = match.group("result")
-                action = normalize_action(None, result=result, method=match.group("method"))
+                #Guardo los resultados en un objeto tipo Detail
+                detail = Detail(
+                    date_format,            # Fecha y hora
+                    match.group("user_id"), # Usuario
+                    match.group("action"),  # Accion
+                    match.group("result")   # Resultado de la accion
+                )
 
-                payload = {
-                    "timestamp": timestamp,
-                    "hour": hour,
-                    "action": action,
-                    "user_id": match.group("user"),
-                    "ip_address": match.group("ip"),
-                    "attempts": 0,
-                    "source": "openssh",
-                    "result": result,
-                    "method": match.group("method"),
-                    "port": int(match.group("port")),
-                    "raw": line.strip(),
-                    "host": match.group("host"),
-                    "pid": int(match.group("pid")),
-                    "outcome": normalize_outcome(result=result, action=action),
-                }
-                records.append(build_event(**payload))
+                #Inserto los datos en el hashmap, donde la clave es la ip y el valor es una lista de objetos tipo Detail
+                hashmap.setdefault(match.group("ip_address"), []).append(detail)
+    
     except FileNotFoundError:
         return []
 
-    return records
+    return hashmap
 
