@@ -62,11 +62,11 @@ class DetalleBruteForce:
         self.compromise = compromise
 
 class BruteForceResult:
-    def _init_(self, ip_address, rapid, persistent, compromise, spraying):
+    def __init__(self, ip_address, rapid, persistent, compromise, spraying):
         self.ip_address = ip_address
         self.rapid = rapid
         self.persistent = persistent
-        self.compromise = [compromise] #Lista DetalleBruteForce
+        self.compromise = compromise #Lista DetalleBruteForce
         self.spraying = spraying
 
 
