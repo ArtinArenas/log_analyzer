@@ -1,5 +1,5 @@
 from parser import parse_log
-from detector import attempts_for_ip, brute_force_for_ip, failed_attempts_for_ip, public_ips, suspicious_activity_by_hour
+from detector import attempts_for_ip, brute_force_for_ip, failed_attempts_for_ip, public_ips, suspicious_activity_by_hour, detect_brute_force_by_ip
 from reports import imp_report
 import argparse # biblioteca para argumentos de línea de comandos
 
@@ -22,17 +22,20 @@ records = parse_log(args.log_file)
 if args.attempts:
     attempts_res = attempts_for_ip(records)
     print("\n\nIntentos: ")
-    imp_report(attempts_res)
+    print(attempts_res)
+    #imp_report(attempts_res)
 
 if args.failed_attempts:
     failed_attempts_res = failed_attempts_for_ip(records)
     print("\n\nIntentos fallidos: ")
-    imp_report(failed_attempts_res)
+    print(failed_attempts_res)
+    #imp_report(failed_attempts_res)
 
 if args.brute_force:
-    brute_force_res = brute_force_for_ip(records)
+    brute_force_res = detect_brute_force_by_ip(records)
     print("\n\nFuerza bruta: ")
-    imp_report(brute_force_res)
+    print(brute_force_res)
+    #imp_report(brute_force_res)
 
 # hasattr para evitar el AttributeError por el default de argparse.SUPPRESS
 if hasattr(args, "suspicious_activity"):

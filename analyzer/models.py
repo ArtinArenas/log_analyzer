@@ -1,4 +1,4 @@
-# Objeto donde se almacenan los registros obtenidos de los logs
+# Objeto principal que representa un evento de autenticación.
 class Event:
     def __init__(
         self,
@@ -137,38 +137,42 @@ def build_alert(**kwargs):
     return Alert(**kwargs)
 
 
-def normalize_action(action, result=None, method=None):
-    if action:
-        return action
+def normalize_action(action=None, result=None, method=None):
+    action_text = str(action or "").strip().upper()
+    result_text = str(result or "").strip().lower()
+    method_text = str(method or "").strip().lower()
 
-    normalized_result = (result or "").strip().lower()
-    if normalized_result in {"accepted", "success", "successfully"}:
-        return "LOGIN_SUCCESS"
-    if normalized_result in {"failed", "failure", "denied"}:
+    if "FAILED" in action_text or "FAILURE" in action_text or "DENIED" in action_text:
         return "LOGIN_FAILED"
-
-    if method:
-        normalized_method = method.strip().lower()
-        if normalized_method in {"password", "publickey"}:
-            return "LOGIN_SUCCESS" if normalized_result != "failed" else "LOGIN_FAILED"
-
-    return "UNKNOWN"
+    if "SUCCESS" in action_text or "ACCEPTED" in action_text:
+        return "LOGIN_SUCCESS"
+    if result_text in {"failed", "failure", "denied"}:
+        return "LOGIN_FAILED"
+    if result_text in {"accepted", "success", "successfully"}:
+        return "LOGIN_SUCCESS"
+    if method_text in {"password", "publickey"}:
+        if result_text in {"accepted", "success", "successfully"}:
+            return "LOGIN_SUCCESS"
+        return "LOGIN_FAILED"
+    if action_text in {"LOGIN", "PASSWORD", "PUBLICKEY", "AUTH", "AUTHENTICATION"}:
+        if result_text in {"accepted", "success", "successfully"}:
+            return "LOGIN_SUCCESS"
+        return "LOGIN_FAILED"
+    return "LOGIN"
 
 
 def normalize_outcome(result=None, action=None):
-    if action:
-        normalized_action = action.strip().lower()
-        if "failed" in normalized_action or "failure" in normalized_action or "denied" in normalized_action:
-            return "failure"
-        if "success" in normalized_action or "accepted" in normalized_action:
-            return "success"
+    action_text = str(action or "").strip().lower()
+    result_text = str(result or "").strip().lower()
 
-    normalized_result = (result or "").strip().lower()
-    if normalized_result in {"accepted", "success", "successfully"}:
-        return "success"
-    if normalized_result in {"failed", "failure", "denied"}:
+    if "failed" in action_text or "failure" in action_text or "denied" in action_text:
         return "failure"
-
+    if "success" in action_text or "accepted" in action_text:
+        return "success"
+    if result_text in {"failed", "failure", "denied"}:
+        return "failure"
+    if result_text in {"accepted", "success", "successfully"}:
+        return "success"
     return "unknown"
 
 
