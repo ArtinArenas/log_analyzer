@@ -1,8 +1,8 @@
 from datetime import datetime, timedelta
 from ipaddress import ip_address
+from pathlib import Path
 from types import SimpleNamespace
-import geoip2.database #pip install geoip2
-from geoip2.errors import AddressNotFoundError
+import maxminddb
 
 from config import (
     DEFAULT_HOUR_INFERIOR,
@@ -336,7 +336,8 @@ def geo_connections(events, window_minutes=5):
         by_user.setdefault(user, []).append(event)
     # Recorro cada usuario y sus eventos, y busco ventanas de tiempo donde haya multiples IPs
     results = []
-    with geoip2.database.Reader('ipinfo_lite.mmdb') as reader:
+    database_path = Path(__file__).with_name("ipinfo_lite.mmdb")
+    with maxminddb.open_database(database_path) as reader:
         for user, user_events in by_user.items():
             user_alerts = []
             for window in _events_in_window(user_events, window_minutes=window_minutes):
@@ -349,13 +350,14 @@ def geo_connections(events, window_minutes=5):
                     if _is_private_ip(ip):
                         continue
                     try:
-                        response = reader.country(ip)
-                        country = response.country.iso_code
+                        response = reader.get(ip)
+                        country = response.get("country_code") if response else None
                         # Aquí podrías almacenar la información de geolocalización para cada IP y luego analizar si están distribuidas geográficamente
-                        countries.add(country)
+                        if country:
+                            countries.add(country)
                     except ValueError:
                         print(f"IP inválida: {ip}")
-                    except AddressNotFoundError:
+                    except KeyError:
                         print(f"IP no encontrada en la base GeoIP: {ip}")
 
                 if len(countries) > 1:

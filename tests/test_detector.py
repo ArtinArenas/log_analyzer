@@ -100,11 +100,11 @@ class DetectorTests(unittest.TestCase):
             def __exit__(self, exc_type, exc_value, traceback):
                 return False
 
-            def country(self, ip):
+            def get(self, ip):
                 country = "US" if ip.startswith("8.8.") else "AU"
-                return SimpleNamespace(country=SimpleNamespace(iso_code=country))
+                return {"country_code": country}
 
-        with patch("detector.geoip2.database.Reader", return_value=FakeReader()) as reader:
+        with patch("detector.maxminddb.open_database", return_value=FakeReader()) as reader:
             result = geo_connections(events, window_minutes=5)
 
         self.assertEqual(reader.call_count, 1)
