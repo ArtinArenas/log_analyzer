@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta
 from ipaddress import ip_address
 from types import SimpleNamespace
+import geoip2.database #pip install geoip2
+from geoip2.errors import AddressNotFoundError
 
 from config import (
     DEFAULT_HOUR_INFERIOR,
@@ -54,6 +56,14 @@ def _to_hour_value(value):
     if isinstance(value, str):
         return value.replace(":", "")
     return value
+
+def _hour_to_minutes(hour_value):
+    hour_value = str(hour_value).replace(":", "")
+
+    hours = int(hour_value[:2])
+    minutes = int(hour_value[2:4])
+
+    return hours * 60 + minutes
 
 
 def attempts_for_ip(events):
@@ -181,20 +191,6 @@ def detect_spraying_brute_force(attempts):
     return len(users) >= SPRAYING_USER_THRESHOLD
 
 
-def detect_brute_force_by_ip(events):
-    grouped = _group_by_ip(events)
-    results = []
-    for ip_value, records in grouped.items():
-        results.append(SimpleNamespace(
-            ip_address=ip_value,
-            rapid=detect_rapid_brute_force(records),
-            persistent=detect_persistent_brute_force(records),
-            compromise=detect_possible_compromise(records),
-            spraying=detect_spraying_brute_force(records),
-        ))
-    return results
-
-
 def detect_distributed_brute_force(events):
     by_user = {}
     for event in events:
@@ -210,10 +206,27 @@ def detect_distributed_brute_force(events):
     ]
 
 
+def detect_brute_force_by_ip(events):
+    grouped = _group_by_ip(events)
+    results = []
+    for ip_value, records in grouped.items():
+        results.append(SimpleNamespace(
+            ip_address=ip_value,
+            rapid=detect_rapid_brute_force(records),
+            persistent=detect_persistent_brute_force(records),
+            compromise=detect_possible_compromise(records),
+            spraying=detect_spraying_brute_force(records),
+            distributed=detect_distributed_brute_force(records),
+        ))
+    return results
+
+
 def _successful_events(events):
     return [event for event in events if classify_event(event) == "success"]
 
 
+# Agrupa eventos que ocurren dentro de una ventana de tiempo.
+'''
 def _events_in_window(events, window_minutes=5):
     ordered = sorted(
         events,
@@ -228,48 +241,223 @@ def _events_in_window(events, window_minutes=5):
                 break
             window.append(other)
         yield window
+'''
+# Misma funcion que la de arriba pero usando punteros (mas eficiente).
+def _events_in_window(events, window_minutes=5):
+    ordered = sorted(
+        events,
+        key=lambda event: datetime.fromisoformat(event.timestamp)
+        if isinstance(event.timestamp, str)
+        else event.timestamp,
+    )
 
+    right = 0
 
+    for left, event in enumerate(ordered):
+        if right < left:
+            right = left
+
+        start_time = event.timestamp
+        if isinstance(start_time, str):
+            start_time = datetime.fromisoformat(start_time)
+
+        while right + 1 < len(ordered):
+            next_time = ordered[right + 1].timestamp
+            if isinstance(next_time, str):
+                next_time = datetime.fromisoformat(next_time)
+
+            if next_time - start_time > timedelta(minutes=window_minutes):
+                break
+
+            right += 1
+
+        yield ordered[left:right + 1]
+
+# ERROR: debe detectar multiples conexiones para un mismo usuario desde diferentes IPs en una ventana corta de tiempo, pero por ahora solo detecta multiples conexiones sin importar la ventana de tiempo. 
 def multi_connections(events, window_minutes=5):
     successful = _successful_events(events)
     by_user = {}
+    # Agrupo eventos por usuario
     for event in successful:
         user = _event_user(event)
         if user is None:
             continue
-        by_user.setdefault(user, set()).add(event.ip_address)
-    return [
-        {"user": user, "ips": sorted(ip_set), "attempts": len(ip_set)}
-        for user, ip_set in by_user.items()
-        if len(ip_set) > 1
-    ]
+        by_user.setdefault(user, []).append(event)
+    # Recorro cada usuario y sus eventos, y busco ventanas de tiempo donde haya multiples IPs
+    results = []
+    for user, user_events in by_user.items():
+        user_alerts = []
+        for window in _events_in_window(user_events, window_minutes=window_minutes):
+            ips_in_window = {event.ip_address for event in window}
+            if len(ips_in_window) <= 1:
+                continue
 
+            start = window[0].timestamp
+            end = window[-1].timestamp
 
+            if isinstance(start, str):
+                start = datetime.fromisoformat(start)
+            if isinstance(end, str):
+                end = datetime.fromisoformat(end)
+
+            if user_alerts and start <= user_alerts[-1]["end"]:
+                previous = user_alerts[-1]
+                previous["ips"].update(ips_in_window)
+                previous["end"] = max(previous["end"], end)
+            else:
+                user_alerts.append({
+                    "user": user,
+                    "ips": set(ips_in_window),
+                    "start": start,
+                    "end": end,
+                })
+
+        for alert in user_alerts:
+            alert["ips"] = sorted(alert["ips"])
+            alert["numberOfIPs"] = len(alert["ips"])
+            results.append(alert)
+        
+    return results
+    
+    
+    
+    
+# ERROR: debe detectar conexiones geograficamente distribuidas para un mismo usuario en una ventana imposible de tiempo, pero por ahora solo devuelve el mismo resultado que multi_connections.
+# Investigar como descargar .mmdb de IPinfo con el plan gratis para poder determinar la geolocalizacion
+# Sin depender del limite de consultas de una API o conexiones externas (salvo por la descarga del .mmdb)
 def geo_connections(events, window_minutes=5):
-    return multi_connections(events, window_minutes=window_minutes)
-
-
-def out_horary_connections(events, work_start=8, work_end=18):
-    alerts = []
-    for event in events:
-        if classify_event(event) != "success":
+    successful = _successful_events(events)
+    by_user = {}
+    # Agrupo eventos por usuario
+    for event in successful:
+        user = _event_user(event)
+        if user is None:
             continue
-        hour_value = _to_hour_value(getattr(event, "hour", None))
-        if hour_value is None:
+        by_user.setdefault(user, []).append(event)
+    # Recorro cada usuario y sus eventos, y busco ventanas de tiempo donde haya multiples IPs
+    results = []
+    with geoip2.database.Reader('ipinfo_lite.mmdb') as reader:
+        for user, user_events in by_user.items():
+            user_alerts = []
+            for window in _events_in_window(user_events, window_minutes=window_minutes):
+                ips_in_window = {event.ip_address for event in window}
+                if len(ips_in_window) <= 1:
+                    continue
+                # Analizo la geolocalización de las IPs para determinar si están distribuidas geográficamente
+                countries = set()
+                for ip in ips_in_window:
+                    if _is_private_ip(ip):
+                        continue
+                    try:
+                        response = reader.country(ip)
+                        country = response.country.iso_code
+                        # Aquí podrías almacenar la información de geolocalización para cada IP y luego analizar si están distribuidas geográficamente
+                        countries.add(country)
+                    except ValueError:
+                        print(f"IP inválida: {ip}")
+                    except AddressNotFoundError:
+                        print(f"IP no encontrada en la base GeoIP: {ip}")
+
+                if len(countries) > 1:
+                    start = window[0].timestamp
+                    end = window[-1].timestamp
+
+                    if isinstance(start, str):
+                        start = datetime.fromisoformat(start)
+                    if isinstance(end, str):
+                        end = datetime.fromisoformat(end)
+
+                    if user_alerts and start <= user_alerts[-1]["end"]:
+                        previous = user_alerts[-1]
+                        previous["ips"].update(ips_in_window)
+                        previous["countries"].update(countries)
+                        previous["end"] = max(previous["end"], end)
+                    else:
+                        user_alerts.append({
+                            "user": user,
+                            "ips": set(ips_in_window),
+                            "countries": set(countries),
+                            "start": start,
+                            "end": end,
+                        })
+
+            for alert in user_alerts:
+                alert["user"] = user
+                alert["ips"] = sorted(alert["ips"])
+                alert["countries"] = sorted(alert["countries"])
+                alert["numberOfIPs"] = len(alert["ips"])
+                alert["numberOfCountries"] = len(alert["countries"])
+                alert["start"] = alert["start"].isoformat() if isinstance(alert["start"], datetime) else alert["start"]
+                alert["end"] = alert["end"].isoformat() if isinstance(alert["end"], datetime) else alert["end"] 
+                results.append(alert)
+
+    return results
+
+
+# Error: debe, por usuario, tomar un promedio de la hora inferior y superior de los intentos exitosos y determinar si el intento de conexion está fuera del horario normal, pero por ahora solo devuelve los intentos exitosos fuera del horario laboral.
+# para este punto no alcanza con promedio, debe ser promedio +- un margen de tolerancia, por ejemplo 1 hora, para determinar si está fuera del horario normal.
+# para el promedio puedo tomar las 3 o 5 horas inferiores y superiores de los intentos exitosos.
+def out_horary_connections(events):
+    successful = _successful_events(events)
+    by_user = {}
+    # Agrupo eventos por usuario
+    for event in successful:
+        user = _event_user(event)
+        if user is None:
             continue
-        hour_int = int(hour_value[:2])
-        if hour_int < work_start or hour_int >= work_end:
-            alerts.append({
-                "user": _event_user(event),
-                "ip": event.ip_address,
-                "hour": hour_value,
-            })
-    return alerts
+        by_user.setdefault(user, []).append(event)
+    
+    # Recorro cada usuario, calculo el promedio de la hora inferior y superior de los intentos exitosos 
+    # y busco conexiones que esten fuera del horario normal
+    results = []
+    for user, user_events in by_user.items():
+        
+        # Tomo todas las horas de los intentos y los guardo en una lista de minutos
+        minutes = [
+            _hour_to_minutes(event.hour)
+            for event in user_events
+            if getattr(event, "hour", None) is not None
+        ]
+        if not minutes:
+            continue
+
+        #Ordeno la lista 
+        ordered = sorted(minutes)
+        #Tomo un limite inf y sup porque un usuario puede iniciar sesion a la mañana y al mediodia despues de almorzar por ejemplo
+        lower_minutes = ordered[:5]
+        upper_minutes = ordered[-5:]
+
+        lower_avg = sum(lower_minutes) / len(lower_minutes)
+        upper_avg = sum(upper_minutes) / len(upper_minutes)
+
+        tolerance = 60  # Una hora
+
+        lower_bound = max(0, lower_avg - tolerance)
+        upper_bound = min(24 * 60 - 1, upper_avg + tolerance)
+
+        #Segundo recorrido para buscar conexiones que esten fuera del horario normal
+        for event in user_events:
+            hour_value = _to_hour_value(getattr(event, "hour", None))
+            if hour_value is None:
+                continue
+            event_minutes = _hour_to_minutes(hour_value)
+            if event_minutes < lower_bound or event_minutes > upper_bound:
+                results.append({
+                    "user": user,
+                    "ip": event.ip_address,
+                    "hour": hour_value,
+                    "lower_avg_hour": lower_avg,
+                    "upper_avg_hour": upper_avg,
+                    "lower_bound": lower_bound,
+                    "upper_bound": upper_bound,
+                })
+    return results
 
 
-def detect_anomalias(events, window_minutes=5, work_start=8, work_end=18):
+
+def detect_anomalias(events, window_minutes=5):
     return {
         "multi_connections": multi_connections(events, window_minutes=window_minutes),
         "geo_connections": geo_connections(events, window_minutes=window_minutes),
-        "out_horary_connections": out_horary_connections(events, work_start=work_start, work_end=work_end),
+        "out_horary_connections": out_horary_connections(events),
     }
