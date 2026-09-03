@@ -54,11 +54,12 @@ class DetectorTests(unittest.TestCase):
 
     def test_suspicious_activity_by_hour_filters_range(self):
         result = suspicious_activity_by_hour(self.events, "000100", "000102")
-        by_hour = {item.hour: item for item in result}
+        by_ip = {item.ip_address: item for item in result}
 
-        self.assertEqual(by_hour["000100"].attempts, 1)
-        self.assertEqual(by_hour["000102"].attempts, 1)
-        self.assertNotIn("020000", by_hour)
+        self.assertEqual(by_ip["192.168.1.10"].attempts, 3)
+        self.assertEqual(set(by_ip["192.168.1.10"].user_id), {"alice", "bob"})
+        self.assertEqual(by_ip["192.168.1.10"].severity, "medium")
+        self.assertNotIn("192.168.1.11", by_ip)
 
     def test_public_ips_filters_out_private_addresses(self):
         result = public_ips(self.events)

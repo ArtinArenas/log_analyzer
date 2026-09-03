@@ -51,6 +51,23 @@ class ParserTests(unittest.TestCase):
         finally:
             os.remove(temp_path)
 
+    def test_openSsh_parser_infers_year_when_crossing_january(self):
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
+            handle.write(
+                "dic 31 23:59:59 debian sshd[2893]: Failed password for root from 192.168.1.37 port 40340 ssh2\n"
+                "ene 01 00:00:01 debian sshd[2894]: Accepted password for root from 192.168.1.37 port 40341 ssh2\n"
+            )
+            temp_path = handle.name
+
+        try:
+            events = openSsh_parser(temp_path)
+            self.assertEqual(
+                [event.timestamp for event in events],
+                [f"{datetime.now().year - 1}-12-31", f"{datetime.now().year}-01-01"],
+            )
+        finally:
+            os.remove(temp_path)
+
 
 if __name__ == "__main__":
     unittest.main()

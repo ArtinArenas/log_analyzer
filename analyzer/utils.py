@@ -1,168 +1,154 @@
+import os
+import urllib.request
+from dotenv import load_dotenv
+from models import classify_event
+from ipaddress import ip_address
+
+
+load_dotenv()
+
+# El usuario debe configurar su token gratuito de IPinfo en su entorno
+TOKEN = os.getenv("IPINFO_TOKEN")
+DB_NAME = "ipinfo_lite.mmdb"
+
+def descargar_base_datos():
+    if not TOKEN:
+        print("Error: Necesitas configurar la variable de entorno IPINFO_TOKEN.")
+        return False
+        
+    # URL de descarga directa para el formato MMDB
+    url = f"https://ipinfo.io/data/ipinfo_lite.mmdb?token={TOKEN}"
+    
+    print("\nDescargando la base de datos de IPinfo actualizada...")
+    try:
+        urllib.request.urlretrieve(url, DB_NAME)
+        print("\nBase de datos descargada con éxito.")
+        return True
+    except Exception as e:
+        print(f"\nError al descargar: {e}")
+        return False
+
+
+###############################################################################################################################
+# Funciones para detectores
+###############################################################################################################################
+def _event_user(event):
+    if event is None:
+        return None
+    user = getattr(event, "user", None)
+    if user is not None:
+        return user
+    user_id = getattr(event, "user_id", None)
+    if isinstance(user_id, list):
+        return user_id[0] if user_id else None
+    if isinstance(user_id, tuple):
+        return user_id[0] if user_id else None
+    return user_id
+
+
+def _group_by_ip(events):
+    if isinstance(events, dict):
+        return events
+    grouped = {}
+    for event in events:
+        ip_value = getattr(event, "ip_address", None)
+        if ip_value is None:
+            continue
+        grouped.setdefault(ip_value, []).append(event)
+    return grouped
+
+
+def _is_private_ip(ip_value):
+    try:
+        parsed = ip_address(str(ip_value))
+    except ValueError:
+        return False
+    return parsed.is_private or parsed.is_loopback or parsed.is_link_local
+
+
+def _to_hour_value(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.replace(":", "")
+    return value
+
+
+def _hour_to_minutes(hour_value):
+    hour_value = str(hour_value).replace(":", "")
+
+    hours = int(hour_value[:2])
+    minutes = int(hour_value[2:4])
+
+    return hours * 60 + minutes
+
+
+def public_ips(events):
+    grouped = _group_by_ip(events)
+    results = []
+    for ip_value, records in grouped.items():
+        if _is_private_ip(ip_value):
+            continue
+        results.append(SimpleNamespace(ip_address=ip_value, attempts=len(records)))
+    return results
+
+def _successful_events(events):
+    return [event for event in events if classify_event(event) == "success"]
+
+# Agrupa eventos por ventanas de tiempo
+def _events_in_window(events, window_minutes=5):
+    ordered = sorted(
+        events,
+        key=lambda event: datetime.fromisoformat(event.timestamp)
+        if isinstance(event.timestamp, str)
+        else event.timestamp,
+    )
+
+    right = 0
+
+    for left, event in enumerate(ordered):
+        if right < left:
+            right = left
+
+        start_time = event.timestamp
+        if isinstance(start_time, str):
+            start_time = datetime.fromisoformat(start_time)
+
+        while right + 1 < len(ordered):
+            next_time = ordered[right + 1].timestamp
+            if isinstance(next_time, str):
+                next_time = datetime.fromisoformat(next_time)
+
+            if next_time - start_time > timedelta(minutes=window_minutes):
+                break
+
+            right += 1
+
+        yield ordered[left:right + 1]
 ###############################################################################################################################
 # Funciones para la cabera de los reportes
 ###############################################################################################################################
 
 # Retorna la cantidad de conexiones
-def count_registros(hashmap):
-    total = 0
-    for value in hashmap.values():
-        total += len(value)
-    return total
+def count_registros(events):
+    return len(events)
 
 # Retorna la cantidad de conexiones fallidas
-def count_registros_failed(hashmap):
-    total = 0
-    for value in hashmap.values():
-        if value["result"] == "failed":
-            total += len(value["details"])
-    return total
+def count_registros_failed(events):   
+    return len([event for event in events if event.outcome == "failure"])
 
-###############################################################################################################################
-# Funciones para detectores
-###############################################################################################################################
+# Obtiene la fecha del primer registro
+def get_first_record_date(events):
+    first_record = None
+    for record in events:
+        if first_record is None or record.timestamp < first_record.timestamp:
+            first_record = record
+    return first_record.timestamp if first_record else None
 
-# Identifica si una dirección IP pertenece a una red privada.
-def _is_private_ip(ip_address):
-    try:
-        octets = [int(part) for part in ip_address.split(".")]
-    except ValueError:
-        return False
-
-    if len(octets) != 4 or any(part < 0 or part > 255 for part in octets):
-        return False
-
-    if octets[0] == 10:
-        return True
-    if octets[0] == 172 and 16 <= octets[1] <= 31:
-        return True
-    if octets[0] == 192 and octets[1] == 168:
-        return True
-    if ip_address in {"127.0.0.1", "0.0.0.0"}:
-        return True
-
-    return False
-
-
-# Filtra las IPs públicas.
-# Input: hashmap devueltos por parser.py
-# Output: hashmap filtrado
-def public_ips(events):
-
-    for event in events:
-        attempts[event.ip_address] += 1
-
-    public_ips_result = {
-        ip: count for ip, count in attempts.items() if not _is_private_ip(ip)
-    }
-
-    return _build_count_alerts(public_ips_result, "public_ips", "ip_address", "attempts")
-
-'''
-Alerta Media: Más de 10 fallos de IP X en 1 minuto.
-Alerta Crítica: Más de 10 fallos de IP X seguidos de 1 acceso exitoso de IP X.
-Alerta de Anomalía: Acceso exitoso del usuario Y desde un país o rango horario no habitual.
-'''
-# Calcula la severidad de una alerta según la cantidad de intentos observados.
-def _severity_from_attempts(attempts):
-    if attempts >= 5:
-        return "high"
-    if attempts >= 3:
-        return "medium"
-    return "low"
-
-
-# Construye una alerta usando un helper común para todos los detectores.
-def _build_alert_from_record(record, detector, message, severity, attempts, **overrides):
-    if isinstance(record, dict):
-        source = dict(record)
-    else:
-        source = vars(record).copy()
-
-    payload = {
-        "timestamp": overrides.get("timestamp", source.get("timestamp")),
-        "hour": overrides.get("hour", source.get("hour")),
-        "severity": severity,
-        "detector": detector,
-        "message": message,
-        "user_id": overrides.get("user_id", source.get("user_ids", source.get("user_id", []))),
-        "ip_address": overrides.get("ip_address", source.get("ip_address")),
-        "attempts": attempts if attempts is not None else source.get("attempts", 0),
-    }
-
-    for key, value in source.items():
-        if key not in payload:
-            payload[key] = value
-
-    payload.update({key: value for key, value in overrides.items() if key not in payload})
-    return build_alert(**payload)
-
-
-# Genera alertas de conteo para los detectores que agregan por una clave.
-def _build_count_alerts(records, detector, key_name, value_name, extra_fields=None):
-    alerts = []
-    for key, value in records.items():
-        payload = {
-            "timestamp": None,
-            "hour": None,
-            "user_id": [],
-            "ip_address": key if key_name == "ip_address" else None,
-            "attempts": value,
-        }
-        if extra_fields:
-            payload.update(extra_fields(key, value))
-
-        message = f"{value} eventos detectados para {key_name} {key}"
-        alerts.append(
-            _build_alert_from_record(
-                payload,
-                detector,
-                message=message,
-                severity=_severity_from_attempts(value),
-                attempts=value,
-                timestamp=None,
-                hour=None,
-                user_id=payload.get("user_id", []),
-                ip_address=payload.get("ip_address"),
-            )
-        )
-    return alerts
-
-# Convierte un evento o un diccionario en una alerta con formato homogéneo.
-def event_to_alert(event, detector="attempts_for_ip"):
-    if isinstance(event, dict):
-        ip_address = event.get("ip_address")
-        user_ids = event.get("user_ids", [])
-        attempts = event.get("attempts", 0)
-        timestamp = event.get("timestamp")
-        hour = event.get("hour")
-    else:
-        ip_address = getattr(event, "ip_address", None)
-        user_ids = getattr(event, "user_id", [])
-        attempts = getattr(event, "attempts", 0)
-        timestamp = getattr(event, "timestamp", None)
-        hour = getattr(event, "hour", None)
-
-    if isinstance(user_ids, list):
-        normalized_user_ids = sorted(user_ids)
-    elif user_ids:
-        normalized_user_ids = [user_ids]
-    else:
-        normalized_user_ids = []
-
-    severity = _severity_from_attempts(attempts)
-    message = (
-        f"{attempts} intentos detectados para la IP {ip_address} "
-        f"desde los usuarios: {', '.join(normalized_user_ids) if normalized_user_ids else 'sin usuarios'}"
-    )
-
-    return _build_alert_from_record(
-        event,
-        detector,
-        message=message,
-        severity=severity,
-        attempts=attempts,
-        timestamp=timestamp,
-        hour=hour,
-        user_id=normalized_user_ids,
-        ip_address=ip_address,
-    )
+# Obtiene la fecha del ultimo registro
+def get_last_record_date(events):
+    last_record = None
+    for record in events:
+        if last_record is None or record.timestamp > last_record.timestamp:
+            last_record = record
+    return last_record.timestamp if last_record else None

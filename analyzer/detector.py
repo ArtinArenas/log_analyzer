@@ -1,9 +1,18 @@
 from datetime import datetime, timedelta
-from ipaddress import ip_address
 from pathlib import Path
 from types import SimpleNamespace
 import maxminddb
-
+from models import classify_event
+from utils import (
+    _event_user, 
+    _group_by_ip,
+    _is_private_ip, 
+    _to_hour_value, 
+    _hour_to_minutes, 
+    public_ips, 
+    _successful_events, 
+    _events_in_window
+)
 from config import (
     DEFAULT_HOUR_INFERIOR,
     DEFAULT_HOUR_SUPERIOR,
@@ -13,59 +22,8 @@ from config import (
     RAPID_BRUTE_FORCE_WINDOW_MINUTES,
     SPRAYING_USER_THRESHOLD,
 )
-from models import classify_event
 
-
-def _event_user(event):
-    if event is None:
-        return None
-    user = getattr(event, "user", None)
-    if user is not None:
-        return user
-    user_id = getattr(event, "user_id", None)
-    if isinstance(user_id, list):
-        return user_id[0] if user_id else None
-    if isinstance(user_id, tuple):
-        return user_id[0] if user_id else None
-    return user_id
-
-
-def _group_by_ip(events):
-    if isinstance(events, dict):
-        return events
-    grouped = {}
-    for event in events:
-        ip_value = getattr(event, "ip_address", None)
-        if ip_value is None:
-            continue
-        grouped.setdefault(ip_value, []).append(event)
-    return grouped
-
-
-def _is_private_ip(ip_value):
-    try:
-        parsed = ip_address(str(ip_value))
-    except ValueError:
-        return False
-    return parsed.is_private or parsed.is_loopback or parsed.is_link_local
-
-
-def _to_hour_value(value):
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value.replace(":", "")
-    return value
-
-def _hour_to_minutes(hour_value):
-    hour_value = str(hour_value).replace(":", "")
-
-    hours = int(hour_value[:2])
-    minutes = int(hour_value[2:4])
-
-    return hours * 60 + minutes
-
-
+# Detecta intentos de login por IP
 def attempts_for_ip(events):
     grouped = _group_by_ip(events)
     results = []
@@ -76,7 +34,7 @@ def attempts_for_ip(events):
         results.append(SimpleNamespace(ip_address=ip_value, attempts=attempts, user_id=users, severity=severity))
     return results
 
-
+# Detecta intentos de login fallidos por IP
 def failed_attempts_for_ip(events):
     grouped = _group_by_ip(events)
     results = []
@@ -88,7 +46,7 @@ def failed_attempts_for_ip(events):
         results.append(SimpleNamespace(ip_address=ip_value, attempts=len(failed_records), user_id=users, severity="medium" if len(failed_records) >= 3 else "low"))
     return results
 
-
+# Detecta intentos de login en un rango horario específico por IP
 def suspicious_activity_by_hour(events, hour_inferior=None, hour_superior=None):
     if hour_inferior is None:
         hour_inferior = DEFAULT_HOUR_INFERIOR.strftime("%H%M%S")
@@ -100,40 +58,37 @@ def suspicious_activity_by_hour(events, hour_inferior=None, hour_superior=None):
     elif hasattr(hour_superior, "strftime"):
         hour_superior = hour_superior.strftime("%H%M%S")
 
-    counts = {}
-    for record in events if not isinstance(events, dict) else [item for group in events.values() for item in group]:
-        hour_value = _to_hour_value(getattr(record, "hour", None))
-        if hour_value is None:
-            timestamp = getattr(record, "timestamp", None)
-            if isinstance(timestamp, str) and "T" in timestamp:
-                hour_value = timestamp[11:19].replace(":", "")
-            elif isinstance(timestamp, str) and len(timestamp) >= 19:
-                hour_value = timestamp[11:19].replace(":", "")
-        if hour_value and hour_inferior <= hour_value <= hour_superior:
-            counts[hour_value] = counts.get(hour_value, 0) + 1
-    return [SimpleNamespace(hour=hour, attempts=count) for hour, count in sorted(counts.items())]
-
-
-def brute_force_for_ip(events, threshold=RAPID_BRUTE_FORCE_THRESHOLD):
     grouped = _group_by_ip(events)
     results = []
     for ip_value, records in grouped.items():
-        failed = [record for record in records if classify_event(record) == "failure"]
-        if len(failed) >= threshold:
-            results.append(SimpleNamespace(ip_address=ip_value, attempts=len(failed)))
+        matching_records = []
+        for record in records:
+            hour_value = _to_hour_value(getattr(record, "hour", None))
+            if hour_value is None:
+                timestamp = getattr(record, "timestamp", None)
+                if isinstance(timestamp, str) and len(timestamp) >= 19:
+                    hour_value = timestamp[11:19].replace(":", "")
+
+            if hour_value is not None and hour_inferior <= hour_value <= hour_superior:
+                matching_records.append(record)
+
+        if matching_records:
+            attempts = len(matching_records)
+            users = sorted({
+                user
+                for user in (_event_user(record) for record in matching_records)
+                if user
+            })
+            severity = "high" if attempts >= 5 else "medium" if attempts >= 3 else "low"
+            results.append(SimpleNamespace(
+                ip_address=ip_value,
+                user_id=users,
+                attempts=attempts,
+                severity=severity,
+            ))
     return results
 
-
-def public_ips(events):
-    grouped = _group_by_ip(events)
-    results = []
-    for ip_value, records in grouped.items():
-        if _is_private_ip(ip_value):
-            continue
-        results.append(SimpleNamespace(ip_address=ip_value, attempts=len(records)))
-    return results
-
-
+# Detecta muchos intentos de login fallidos por IP en un corto período de tiempo
 def detect_rapid_brute_force(attempts):
     failed_attempts = [attempt for attempt in attempts if classify_event(attempt) == "failure"]
     if len(failed_attempts) < RAPID_BRUTE_FORCE_THRESHOLD:
@@ -148,7 +103,7 @@ def detect_rapid_brute_force(attempts):
             return True
     return False
 
-
+# Detecta muchos intentos de login fallidos por IP separados en tiempo para evitar ser detectados como un ataque de fuerza bruta rápido
 def detect_persistent_brute_force(attempts):
     consecutive_failures = 0
     for attempt in attempts:
@@ -160,7 +115,7 @@ def detect_persistent_brute_force(attempts):
             consecutive_failures = 0
     return False
 
-
+# Detecta usuarios comprometidos por múltiples intentos fallidos de login seguidos de un intento exitoso
 def detect_possible_compromise(attempts):
     by_user = {}
     for attempt in attempts:
@@ -181,7 +136,7 @@ def detect_possible_compromise(attempts):
         if values["compromised"]
     ]
 
-
+# Detecta intentos de login de una IP a multiples usuarios (ataque de fuerza bruta por spraying)
 def detect_spraying_brute_force(attempts):
     users = {
         _event_user(attempt)
@@ -190,7 +145,7 @@ def detect_spraying_brute_force(attempts):
     }
     return len(users) >= SPRAYING_USER_THRESHOLD
 
-
+# Detecta ataques a un mismo usuario desde múltiples IPs (ataque de fuerza bruta distribuido)
 def detect_distributed_brute_force(events):
     by_user = {}
     for event in events:
@@ -200,80 +155,33 @@ def detect_distributed_brute_force(events):
         if classify_event(event) == "failure":
             by_user.setdefault(user, set()).add(event.ip_address)
     return [
-        {"user": user, "ips": sorted(ip_set), "attempts": len(ip_set)}
+        {"user": user, "ips": sorted(ip_set), "numberOfIPs": len(ip_set)}
         for user, ip_set in by_user.items()
         if len(ip_set) > 1
     ]
 
-
+# Orquestador de funciones
 def detect_brute_force_by_ip(events):
     grouped = _group_by_ip(events)
     results = []
     for ip_value, records in grouped.items():
+        rapid = detect_rapid_brute_force(records)
+        persistent = detect_persistent_brute_force(records)
+        spraying = detect_spraying_brute_force(records)
+
+        if not (rapid or persistent or spraying):
+            continue
+
         results.append(SimpleNamespace(
             ip_address=ip_value,
-            rapid=detect_rapid_brute_force(records),
-            persistent=detect_persistent_brute_force(records),
-            compromise=detect_possible_compromise(records),
-            spraying=detect_spraying_brute_force(records),
-            distributed=detect_distributed_brute_force(records),
+            rapid=rapid,
+            persistent=persistent,
+            spraying=spraying,
         ))
+        
     return results
 
-
-def _successful_events(events):
-    return [event for event in events if classify_event(event) == "success"]
-
-
-# Agrupa eventos que ocurren dentro de una ventana de tiempo.
-'''
-def _events_in_window(events, window_minutes=5):
-    ordered = sorted(
-        events,
-        key=lambda event: datetime.fromisoformat(event.timestamp) if isinstance(event.timestamp, str) else event.timestamp,
-    )
-    for index, event in enumerate(ordered):
-        window = [event]
-        for other in ordered[index + 1:]:
-            current_ts = datetime.fromisoformat(event.timestamp) if isinstance(event.timestamp, str) else event.timestamp
-            other_ts = datetime.fromisoformat(other.timestamp) if isinstance(other.timestamp, str) else other.timestamp
-            if other_ts - current_ts > timedelta(minutes=window_minutes):
-                break
-            window.append(other)
-        yield window
-'''
-# Misma funcion que la de arriba pero usando punteros (mas eficiente).
-def _events_in_window(events, window_minutes=5):
-    ordered = sorted(
-        events,
-        key=lambda event: datetime.fromisoformat(event.timestamp)
-        if isinstance(event.timestamp, str)
-        else event.timestamp,
-    )
-
-    right = 0
-
-    for left, event in enumerate(ordered):
-        if right < left:
-            right = left
-
-        start_time = event.timestamp
-        if isinstance(start_time, str):
-            start_time = datetime.fromisoformat(start_time)
-
-        while right + 1 < len(ordered):
-            next_time = ordered[right + 1].timestamp
-            if isinstance(next_time, str):
-                next_time = datetime.fromisoformat(next_time)
-
-            if next_time - start_time > timedelta(minutes=window_minutes):
-                break
-
-            right += 1
-
-        yield ordered[left:right + 1]
-
-# ERROR: debe detectar multiples conexiones para un mismo usuario desde diferentes IPs en una ventana corta de tiempo, pero por ahora solo detecta multiples conexiones sin importar la ventana de tiempo. 
+# Detecta conexiones múltiples de un mismo usuario desde diferentes IPs en una ventana de tiempo específica
 def multi_connections(events, window_minutes=5):
     successful = _successful_events(events)
     by_user = {}
@@ -319,12 +227,7 @@ def multi_connections(events, window_minutes=5):
         
     return results
     
-    
-    
-    
-# ERROR: debe detectar conexiones geograficamente distribuidas para un mismo usuario en una ventana imposible de tiempo, pero por ahora solo devuelve el mismo resultado que multi_connections.
-# Investigar como descargar .mmdb de IPinfo con el plan gratis para poder determinar la geolocalizacion
-# Sin depender del limite de consultas de una API o conexiones externas (salvo por la descarga del .mmdb)
+# Detecta conexiones geograficamente distribuidas de un mismo usuario desde diferentes IPs en una ventana de tiempo específica
 def geo_connections(events, window_minutes=5):
     successful = _successful_events(events)
     by_user = {}
@@ -395,10 +298,7 @@ def geo_connections(events, window_minutes=5):
 
     return results
 
-
-# Error: debe, por usuario, tomar un promedio de la hora inferior y superior de los intentos exitosos y determinar si el intento de conexion está fuera del horario normal, pero por ahora solo devuelve los intentos exitosos fuera del horario laboral.
-# para este punto no alcanza con promedio, debe ser promedio +- un margen de tolerancia, por ejemplo 1 hora, para determinar si está fuera del horario normal.
-# para el promedio puedo tomar las 3 o 5 horas inferiores y superiores de los intentos exitosos.
+# Detecta conexiones fuera del horario normal de un mismo usuario desde diferentes IPs
 def out_horary_connections(events):
     successful = _successful_events(events)
     by_user = {}
@@ -455,8 +355,7 @@ def out_horary_connections(events):
                 })
     return results
 
-
-
+# Orquestador de funciones para detectar anomalias
 def detect_anomalias(events, window_minutes=5):
     return {
         "multi_connections": multi_connections(events, window_minutes=window_minutes),

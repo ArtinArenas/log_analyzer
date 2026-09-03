@@ -5,9 +5,11 @@ from models import Event, normalize_action, normalize_outcome
 
 MONTHS = {
     "jan": 1,
+    "ene": 1,
     "feb": 2,
     "mar": 3,
     "apr": 4,
+    "abr": 4,
     "may": 5,
     "jun": 6,
     "jul": 7,
@@ -103,7 +105,12 @@ def openSsh_parser(path="log_ssh.log"):
 
     try:
         with open(path, "r", encoding="utf-8") as file:
-            for line in file:
+            lines = file.readlines()
+            inferred_year = None
+            previous_month = None
+            today = datetime.now()
+
+            for line in reversed(lines):
                 match = re.search(pattern, line)
                 if not match:
                     continue
@@ -111,10 +118,19 @@ def openSsh_parser(path="log_ssh.log"):
                 raw_method = match.group("method")
                 outcome = "success" if raw_result == "Accepted" else "failure"
                 action = normalize_action("LOGIN", raw_result, raw_method)
+                month = MONTHS.get(match.group("month").lower())
+                if month is None:
+                    continue
+                day = int(match.group("day"))
+                if inferred_year is None:
+                    inferred_year = today.year if (month, day) <= (today.month, today.day) else today.year - 1
+                elif previous_month is not None and month > previous_month:
+                    inferred_year -= 1
+                previous_month = month
                 date_object = datetime(
-                    year=datetime.now().year,
-                    month=MONTHS.get(match.group("month").lower()),
-                    day=int(match.group("day")),
+                    year=inferred_year,
+                    month=month,
+                    day=day,
                     hour=int(match.group("hour")),
                     minute=int(match.group("minute")),
                     second=int(match.group("second")),
@@ -137,5 +153,5 @@ def openSsh_parser(path="log_ssh.log"):
                 )
     except FileNotFoundError:
         return []
-    return events
+    return list(reversed(events))
 
