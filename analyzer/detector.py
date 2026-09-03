@@ -1,7 +1,6 @@
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-import maxminddb
 from models import classify_event
 from utils import (
     _event_user, 
@@ -9,9 +8,8 @@ from utils import (
     _is_private_ip, 
     _to_hour_value, 
     _hour_to_minutes, 
-    public_ips, 
     _successful_events, 
-    _events_in_window
+    _events_in_window,
 )
 from config import (
     DEFAULT_HOUR_INFERIOR,

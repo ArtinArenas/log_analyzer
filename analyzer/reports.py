@@ -1,8 +1,6 @@
 from detector import (
     attempts_for_ip, 
-    #brute_force_for_ip, 
     failed_attempts_for_ip, 
-    public_ips, 
     suspicious_activity_by_hour, 
     detect_brute_force_by_ip,
     detect_distributed_brute_force,
@@ -10,7 +8,7 @@ from detector import (
     multi_connections,
     geo_connections,
     out_horary_connections,)
-from utils import count_registros, count_registros_failed, get_first_record_date, get_last_record_date
+from utils import count_registros, count_registros_failed, get_first_record_date, get_last_record_date, public_ips
 from types import SimpleNamespace
 
 #Resumen: muestra cantidad logins, cantidad de logins fallidos, fecha del primer registro, fecha del ultimo registro.
@@ -46,6 +44,7 @@ def _print_results(results, printer):
 
 def imp_report(
     alerts,
+    publicas=False,
     intentos=False,
     fallidos=False,
     sospechosos=False,
@@ -58,6 +57,11 @@ def imp_report(
     geo=False,
     horary=False,
 ):
+
+    #Filtro unicamente IPs publicas
+    if publicas:
+        alerts = public_ips(alerts)
+    
     summary = report_summary(alerts)
     print("\n" + "=" * 64)
     print("ANALISIS DE LOGS")

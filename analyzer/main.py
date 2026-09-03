@@ -16,6 +16,7 @@ parser.add_argument("--geo_connections", "-g", action="store_true", help="Muestr
 parser.add_argument("--out_horary_connections", "-o", action="store_true", help="Muestra conexiones fuera del horario habitual")
 parser.add_argument("--suspicious_activity", "-s", nargs='*', default=argparse.SUPPRESS, metavar=("hora_min", "hora_max"), help="Muestra la actividad sospechosa por hora. Se deben ingresar dos horas en formato HHMMSS. Valores dafualt: 000000 050000")
 parser.add_argument("--public_ips", "-p", action="store_true", help="Muestra las IPs públicas que se conectaron al servidor")
+parser.add_argument("--update", action="store_true", help="Actualiza la base de datos de IPs públicas y geolocalización")
 # Argumento posicional
 parser.add_argument("log_file", type=str, help="Ruta al archivo de log")
 
@@ -32,8 +33,16 @@ if hasattr(args, "suspicious_activity"):
     elif len(valores) != 0:
         parser.error("La opción -s requiere exactamente dos horas (HHMMSS) o ninguna para usar valores por defecto.")
 
+#Actualizo la ddbb
+if(args.update):
+    from utils import update_ip_database
+    update_ip_database()
+
+
+#invoca el reporte con los registros y los argumentos
 imp_report(
     records,
+    publicas=args.public_ips,
     intentos=args.attempts,
     fallidos=args.failed_attempts,
     sospechosos=hasattr(args, "suspicious_activity"),

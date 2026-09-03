@@ -1,11 +1,16 @@
 import os
 import urllib.request
-from dotenv import load_dotenv
-from models import classify_event
+from importlib import import_module
+from models import classify_event, Event, normalize_outcome, normalize_action
 from ipaddress import ip_address
+from types import SimpleNamespace
+from datetime import datetime, timedelta
 
 
-load_dotenv()
+try:
+    import_module("dotenv").load_dotenv()
+except ImportError:
+    pass
 
 # El usuario debe configurar su token gratuito de IPinfo en su entorno
 TOKEN = os.getenv("IPINFO_TOKEN")
@@ -89,7 +94,7 @@ def public_ips(events):
     for ip_value, records in grouped.items():
         if _is_private_ip(ip_value):
             continue
-        results.append(SimpleNamespace(ip_address=ip_value, attempts=len(records)))
+        results.extend(records)
     return results
 
 def _successful_events(events):
@@ -135,7 +140,7 @@ def count_registros(events):
 
 # Retorna la cantidad de conexiones fallidas
 def count_registros_failed(events):   
-    return len([event for event in events if event.outcome == "failure"])
+    return len([event for event in events if classify_event(event) == "failure"])
 
 # Obtiene la fecha del primer registro
 def get_first_record_date(events):
