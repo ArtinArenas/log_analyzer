@@ -20,3 +20,6 @@ SPRAYING_USER_THRESHOLD = 3
 # DEFAULT_HOUR_SUPERIOR = time(5, 0, 0)
 # RAPID_BRUTE_FORCE_THRESHOLD = 10
 # RAPID_BRUTE_FORCE_WINDOW_MINUTES = 1
+
+
+IPINFO_TOKEN = "your_ipinfo_token_here"  # Reemplaza con tu token de IPinfo

@@ -18,9 +18,18 @@ parser.add_argument("--suspicious_activity", "-s", nargs='*', default=argparse.S
 parser.add_argument("--public_ips", "-p", action="store_true", help="Muestra las IPs públicas que se conectaron al servidor")
 parser.add_argument("--update", action="store_true", help="Actualiza la base de datos de IPs públicas y geolocalización")
 # Argumento posicional
-parser.add_argument("log_file", type=str, help="Ruta al archivo de log")
+parser.add_argument("log_file", nargs="?", type=str, help="Ruta al archivo de log")
+
 
 args = parser.parse_args()
+
+if args.update:
+    from utils import descargar_base_datos
+    descargar_base_datos()
+    raise SystemExit(0)
+
+if not args.log_file:
+    parser.error("log_file es obligatorio cuando no se usa --update.")
 
 records = parse_log(args.log_file)
 
@@ -32,12 +41,6 @@ if hasattr(args, "suspicious_activity"):
         hora_min, hora_max = valores
     elif len(valores) != 0:
         parser.error("La opción -s requiere exactamente dos horas (HHMMSS) o ninguna para usar valores por defecto.")
-
-#Actualizo la ddbb
-if(args.update):
-    from utils import update_ip_database
-    update_ip_database()
-
 
 #invoca el reporte con los registros y los argumentos
 imp_report(

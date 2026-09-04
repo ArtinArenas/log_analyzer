@@ -5,6 +5,7 @@ from models import classify_event, Event, normalize_outcome, normalize_action
 from ipaddress import ip_address
 from types import SimpleNamespace
 from datetime import datetime, timedelta
+import config
 
 
 try:
@@ -13,16 +14,16 @@ except ImportError:
     pass
 
 # El usuario debe configurar su token gratuito de IPinfo en su entorno
-TOKEN = os.getenv("IPINFO_TOKEN")
+#TOKEN = os.getenv("IPINFO_TOKEN")
 DB_NAME = "ipinfo_lite.mmdb"
 
 def descargar_base_datos():
-    if not TOKEN:
+    if not config.IPINFO_TOKEN:
         print("Error: Necesitas configurar la variable de entorno IPINFO_TOKEN.")
         return False
         
     # URL de descarga directa para el formato MMDB
-    url = f"https://ipinfo.io/data/ipinfo_lite.mmdb?token={TOKEN}"
+    url = f"https://ipinfo.io/data/ipinfo_lite.mmdb?token={config.IPINFO_TOKEN}"
     
     print("\nDescargando la base de datos de IPinfo actualizada...")
     try:

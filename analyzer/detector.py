@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from models import classify_event
+import maxminddb
 from utils import (
     _event_user, 
     _group_by_ip,
