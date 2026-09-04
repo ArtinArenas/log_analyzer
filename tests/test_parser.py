@@ -6,10 +6,34 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "analyzer"))
 
-from parser import openSsh_parser, parse_log
+from parser import example_parser, openSsh_parser, parse_log
 
 
 class ParserTests(unittest.TestCase):
+    def test_example_parser_normalizes_login_event(self):
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
+            handle.write("2026-07-20 081532 LOGIN_SUCCESS user=juan ip=192.168.1.15\n")
+            temp_path = handle.name
+
+        try:
+            events = example_parser(temp_path)
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0].timestamp, "2026-07-20")
+            self.assertEqual(events[0].hour, "081532")
+            self.assertEqual(events[0].action, "LOGIN_SUCCESS")
+            self.assertEqual(events[0].outcome, "success")
+            self.assertEqual(events[0].user_id, ["juan"])
+            self.assertEqual(events[0].source, "example")
+        finally:
+            os.remove(temp_path)
+
+    def test_parsers_return_empty_list_for_missing_file(self):
+        missing_path = os.path.join(tempfile.gettempdir(), "log-analyzer-missing.log")
+
+        self.assertEqual(example_parser(missing_path), [])
+        self.assertEqual(openSsh_parser(missing_path), [])
+        self.assertEqual(parse_log(missing_path), [])
+
     def test_openSsh_parser_normalizes_fields(self):
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             handle.write(

@@ -3,3 +3,4 @@ venv/
 analyzer/log_ssh.log
 .env
 analyzer/ipinfo_lite.mmdb
+analyzer/windows*
